@@ -39,10 +39,12 @@ CODE_EXTS = {
 }
 
 ARCHIVE_EXTS = {
-    ".zip", ".jar", ".apk", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
+    ".zip", ".jar", ".apk", ".odt", ".ods", ".odp",
     ".tar", ".tgz", ".tar.gz", ".gz", ".bz2", ".xz", ".lzma",
     ".7z", ".rar"
 }
+
+OFFICE_XML_EXTS = {".docx", ".xlsx", ".pptx"}
 
 
 @dataclass
@@ -267,17 +269,25 @@ def check_image(path: Path, deep_png: bool = False) -> tuple[bool, str]:
     return False, "unsupported image type"
 
 
+def decode_bytes_best_effort(data: bytes) -> str:
+    for enc in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def run_cmd(args, timeout: int) -> tuple[int, str, str]:
     p = subprocess.run(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
+        text=False,
         timeout=timeout,
         stdin=subprocess.DEVNULL
     )
-    return p.returncode, p.stdout, p.stderr
+    return p.returncode, decode_bytes_best_effort(p.stdout), decode_bytes_best_effort(p.stderr)
 
 
 def check_video(path: Path, deep_video: bool = False, timeout: int = 20) -> tuple[bool, str]:
@@ -424,6 +434,41 @@ def check_code_text(path: Path, max_text_mb: int = 64) -> tuple[bool, str]:
         return False, f"text check error: {e}"
 
 
+
+def check_office_xml(path: Path) -> tuple[bool, str]:
+    """
+    Office Open XML 文件（docx/xlsx/pptx）快速检查：
+    - 先判断 ZIP 容器
+    - 检查关键 XML 入口是否存在
+    - 避免完整解压，提高速度
+    """
+    try:
+        low_name = path.name.lower()
+        if low_name.startswith("~$"):
+            return True, "office temp lock file skipped"
+
+        if not zipfile.is_zipfile(path):
+            return False, "not a valid OOXML ZIP container"
+
+        required = {
+            ".docx": ("[Content_Types].xml", "word/document.xml"),
+            ".xlsx": ("[Content_Types].xml", "xl/workbook.xml"),
+            ".pptx": ("[Content_Types].xml", "ppt/presentation.xml"),
+        }
+        ext = path.suffix.lower()
+        must_have = required.get(ext, ("[Content_Types].xml",))
+
+        with zipfile.ZipFile(path, "r") as zf:
+            names = set(zf.namelist())
+            missing = [n for n in must_have if n not in names]
+            if missing:
+                return False, f"OOXML container missing entries: {', '.join(missing)}"
+
+        return True, f"OOXML container OK, entries={len(names)}"
+
+    except Exception as e:
+        return False, f"office check error: {e}"
+
 def check_archive(path: Path) -> tuple[bool, str]:
     """
     压缩文件粗略检查：
@@ -493,6 +538,9 @@ def classify(path: Path) -> str:
     if ext in VIDEO_EXTS:
         return "video"
 
+    if ext in OFFICE_XML_EXTS:
+        return "office"
+
     if is_archive_file(path):
         return "archive"
 
@@ -523,6 +571,8 @@ def check_one(path: Path, args) -> CheckResult:
             path,
             max_text_mb=args.max_text_mb
         )
+    elif kind == "office":
+        ok, detail = check_office_xml(path)
     elif kind == "archive":
         ok, detail = check_archive(path)
     else:
@@ -565,7 +615,7 @@ def write_json(results, output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Check validity of videos, jpg/png images, code text files, and archives."
+        description="Check validity of videos, jpg/png images, code text files, Office files, and archives."
     )
 
     parser.add_argument(
