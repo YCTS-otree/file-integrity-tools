@@ -7,7 +7,7 @@
 | 文件 | 功能 | 适用场景 |
 | --- | --- | --- |
 | `check_files_validity.py` | 批量检查图片、视频、代码/文本、Office OOXML、压缩包等文件是否明显损坏 | 扫描目录，快速找出坏图、坏视频、无法解码文本、异常压缩包等 |
-| `compare_folders.py` | 使用 Everything CLI（`es.exe`）快速比对两个目录的相对路径/文件名，可选比较大小和修改时间 | 对比备份目录、迁移目录、网盘同步目录是否缺文件 |
+| `compare_folders.py` | 使用 Everything CLI（`es.exe`）快速比对两个目录的相对路径/文件名，可选比较大小和修改时间，并限制明细显示条数 | 对比备份目录、迁移目录、网盘同步目录是否缺文件 |
 | `es.exe` | Everything 命令行工具，由 `compare_folders.py` 调用 | Windows 上依赖 Everything 索引来快速枚举文件 |
 
 ## 环境要求
@@ -138,6 +138,18 @@ python compare_folders.py "E:\A" "D:\B" -s -t
 python compare_folders.py "E:\A" "D:\B" -t --time-tolerance 5
 ```
 
+限制每个异常分组最多显示 20 条明细（默认 64 条）：
+
+```bash
+python compare_folders.py "E:\A" "D:\B" -s -t --max-display 20
+```
+
+只看最终报表，不显示各分组明细：
+
+```bash
+python compare_folders.py "E:\A" "D:\B" -s -t --max-display 0
+```
+
 输出 Everything 查询调试信息：
 
 ```bash
@@ -158,6 +170,7 @@ python compare_folders.py -h
 | `-s` | 比较文件大小 |
 | `-t` | 比较修改时间 |
 | `--time-tolerance SECONDS` | 修改时间容差，默认 `2` 秒 |
+| `--max-display N` | 每个明细分组最多显示 `N` 条，默认 `64` 条；设为 `0` 表示只看报表不显示明细 |
 | `--debug` | 输出 Everything 查询调试信息 |
 
 ### 结果解释
@@ -167,7 +180,7 @@ python compare_folders.py -h
 - `Size mismatch` / `大小不同`：相对路径相同，但文件大小不同，需要使用 `-s` 才会检查。
 - `Modified time mismatch` / `修改时间不同`：相对路径相同，但修改时间差超过容差，需要使用 `-t` 才会检查。
 
-> 注意：这个脚本不计算哈希，因此不能证明文件内容 100% 完全一致。如果需要严格校验，建议先用本工具筛出可疑文件，再对可疑文件单独计算哈希。
+> 注意：这个脚本不计算哈希，因此不能证明文件内容 100% 完全一致。如果需要严格校验，建议先用本工具筛出可疑文件，再对可疑文件单独计算哈希。运行时会用单行刷新显示已统计/已比对的文件数量；执行完成后会输出报表，明细默认每组最多显示 64 条。
 
 ## 常见问题
 
