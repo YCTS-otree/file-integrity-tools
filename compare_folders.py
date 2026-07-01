@@ -32,7 +32,7 @@ HELP_TEXT = r"""
   python compare_folders.py "E:\A" "D:\B" -t --time-tolerance 5
 
 选项 / Options:
-  -h, -help
+  -h, -help, --help
       显示帮助信息。
       Show this help message.
 
@@ -351,7 +351,7 @@ def parse_args():
     parser.add_argument("folder_a", nargs="?")
     parser.add_argument("folder_b", nargs="?")
 
-    parser.add_argument("-h", "-help", action="store_true", dest="help")
+    parser.add_argument("-h", "-help", "--help", action="store_true", dest="help")
     parser.add_argument("-s", action="store_true", dest="check_size")
     parser.add_argument("-t", action="store_true", dest="check_time")
     parser.add_argument("--time-tolerance", type=float, default=2.0)
