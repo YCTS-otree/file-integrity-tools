@@ -133,17 +133,22 @@ def normalize_relpath(path: Path) -> str:
 def get_file_meta(path: Path, check_size: bool, check_time: bool):
     """
     只读取文件元数据，不读取文件内容。
+
+    返回 (size, mtime_ns, error)。当 Windows 路径中包含当前代码页无法
+    往返表示的字符，或 Everything 索引中的路径已经失效时，Path.stat()
+    可能失败。此时应把文件列为“元数据读取失败”，而不是误判为大小/
+    时间不同。
     """
     size = None
     mtime_ns = None
 
     if not check_size and not check_time:
-        return size, mtime_ns
+        return size, mtime_ns, None
 
     try:
         st = path.stat()
-    except OSError:
-        return size, mtime_ns
+    except OSError as exc:
+        return size, mtime_ns, str(exc)
 
     if check_size:
         size = st.st_size
@@ -151,7 +156,7 @@ def get_file_meta(path: Path, check_size: bool, check_time: bool):
     if check_time:
         mtime_ns = st.st_mtime_ns
 
-    return size, mtime_ns
+    return size, mtime_ns, None
 
 
 def print_progress(message: str):
@@ -225,13 +230,14 @@ def query_everything_files(folder: str, label: str, check_size=False, check_time
             duplicated_paths += 1
             continue
 
-        size, mtime_ns = get_file_meta(p, check_size, check_time)
+        size, mtime_ns, meta_error = get_file_meta(p, check_size, check_time)
 
         files[rel_key] = {
             "path": p,
             "relative": rel,
             "size": size,
             "mtime_ns": mtime_ns,
+            "meta_error": meta_error,
         }
 
     print_progress(f"统计 {label} 完成 / Counting {label} done: {len(files)} files")
@@ -265,10 +271,11 @@ def file_record(files, rel):
         "size": item["size"],
         "mtime": format_time_ns(item["mtime_ns"]),
         "mtime_ns": item["mtime_ns"],
+        "meta_error": item.get("meta_error"),
     }
 
 
-def build_report_data(folder_a, folder_b, a, b, common, only_a, only_b, size_mismatch, time_mismatch, check_size, check_time, time_tolerance):
+def build_report_data(folder_a, folder_b, a, b, common, only_a, only_b, size_mismatch, time_mismatch, meta_unavailable, check_size, check_time, time_tolerance):
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "folder_a": str(normalize_folder_arg(folder_a)),
@@ -286,6 +293,7 @@ def build_report_data(folder_a, folder_b, a, b, common, only_a, only_b, size_mis
             "only_in_b": len(only_b),
             "size_mismatches": len(size_mismatch),
             "time_mismatches": len(time_mismatch),
+            "metadata_unavailable": len(meta_unavailable),
         },
         "only_in_a": [file_record(a, rel) for rel in only_a],
         "only_in_b": [file_record(b, rel) for rel in only_b],
@@ -304,6 +312,14 @@ def build_report_data(folder_a, folder_b, a, b, common, only_a, only_b, size_mis
                 "b": file_record(b, rel),
             }
             for rel in time_mismatch
+        ],
+        "metadata_unavailable": [
+            {
+                "relative": rel,
+                "a": file_record(a, rel),
+                "b": file_record(b, rel),
+            }
+            for rel in meta_unavailable
         ],
     }
 
@@ -337,6 +353,7 @@ def report_to_text(report):
         f"仅 B 存在数量 / Only in B: {summary['only_in_b']}",
         f"大小不同数量 / Size mismatches: {summary['size_mismatches']}",
         f"修改时间不同数量 / Time mismatches: {summary['time_mismatches']}",
+        f"元数据读取失败数量 / Metadata unavailable: {summary['metadata_unavailable']}",
         "",
     ]
 
@@ -363,6 +380,16 @@ def report_to_text(report):
         "========== 修改时间不同 / Modified Time Mismatch ==========" ,
         report["time_mismatches"],
         lambda item: f"{item['relative']} | A={item['a']['mtime']} | B={item['b']['mtime']}",
+    )
+    append_txt_group(
+        lines,
+        "========== 元数据读取失败 / Metadata Unavailable ==========" ,
+        report["metadata_unavailable"],
+        lambda item: (
+            f"{item['relative']} | "
+            f"A_error={item['a']['meta_error']} | "
+            f"B_error={item['b']['meta_error']}"
+        ),
     )
 
     return "\n".join(lines) + "\n"
@@ -424,6 +451,7 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
 
     size_mismatch = []
     time_mismatch = []
+    meta_unavailable = []
 
     tolerance_ns = int(time_tolerance * 1_000_000_000)
 
@@ -434,8 +462,13 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
         fa = a[rel]
         fb = b[rel]
 
+        meta_failed = fa.get("meta_error") is not None or fb.get("meta_error") is not None
+        if meta_failed and (check_size or check_time):
+            meta_unavailable.append(rel)
+            continue
+
         if check_size:
-            if fa["size"] is None or fb["size"] is None or fa["size"] != fb["size"]:
+            if fa["size"] != fb["size"]:
                 size_mismatch.append(rel)
 
         if check_time:
@@ -458,6 +491,7 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
         only_b,
         size_mismatch,
         time_mismatch,
+        meta_unavailable,
         check_size,
         check_time,
         time_tolerance,
@@ -480,6 +514,9 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
     if check_time:
         print(f"修改时间不同数量 / Time mismatches: {len(time_mismatch)}")
         print(f"修改时间容差 / Time tolerance: {time_tolerance} 秒 / seconds")
+
+    if check_size or check_time:
+        print(f"元数据读取失败数量 / Metadata unavailable: {len(meta_unavailable)}")
 
     print()
 
@@ -518,7 +555,19 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
             ),
         )
 
-    if not only_a and not only_b and not size_mismatch and not time_mismatch and len(a) > 0 and len(b) > 0:
+    if check_size or check_time:
+        print_limited_group(
+            "========== 元数据读取失败 / Metadata Unavailable ==========" ,
+            meta_unavailable,
+            max_display,
+            lambda rel: (
+                f"{rel} | "
+                f"A_error={a[rel].get('meta_error')} | "
+                f"B_error={b[rel].get('meta_error')}"
+            ),
+        )
+
+    if not only_a and not only_b and not size_mismatch and not time_mismatch and not meta_unavailable and len(a) > 0 and len(b) > 0:
         if check_size and check_time:
             print("相对路径 + 文件名 + 大小 + 修改时间一致。")
             print("Relative path + filename + size + modified time are consistent.")
@@ -587,4 +636,5 @@ def main():
     )
 
 
-main()
+if __name__ == "__main__":
+    main()
