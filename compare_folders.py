@@ -1,7 +1,9 @@
 import argparse
+import json
 import subprocess
 import sys
 import locale
+from datetime import datetime
 from pathlib import Path
 
 
@@ -54,6 +56,10 @@ HELP_TEXT = r"""
       每个明细分组最多显示 N 条，默认 64 条。设为 0 表示不显示明细。
       Maximum displayed entries per detail group. Default: 64. Use 0 to hide details.
 
+  --report-dir DIR
+      完整 TXT/JSON 报告保存目录，默认当前目录。
+      Directory for full TXT/JSON reports. Default: current directory.
+
   --debug
       输出 Everything 查询调试信息。
       Show Everything query debug information.
@@ -74,10 +80,18 @@ HELP_TEXT = r"""
 注意 / Notes:
   1. 本工具不计算哈希，因此不能证明文件内容 100% 相同。
   2. -s 和 -t 只检查元数据，不读取文件内容。
-  3. 每个明细分组默认最多显示 64 条，完整数量请看最终报表。
-  4. 如果需要绝对严谨校验，应在筛出可疑文件后再单独计算哈希。
-  5. 请确保 Everything 已经索引目标磁盘。
+  3. 每个明细分组默认最多显示 64 条；完整明细会保存到本地 TXT 和 JSON 报告。
+  4. 盘符根目录请使用 G: 或 G:\，脚本会自动规范化为 G:\。
+  5. 如果需要绝对严谨校验，应在筛出可疑文件后再单独计算哈希。
+  6. 请确保 Everything 已经索引目标磁盘。
 """
+
+
+def normalize_folder_arg(folder: str) -> Path:
+    text = str(folder).strip().strip('"')
+    if len(text) == 2 and text[1] == ":" and text[0].isalpha():
+        text += "\\"
+    return Path(text).resolve()
 
 
 def decode_es_output(raw: bytes) -> str:
@@ -155,7 +169,7 @@ def query_everything_files(folder: str, label: str, check_size=False, check_time
     -path <path> : 限定目录
     /a-d         : 只返回文件，排除目录
     """
-    base = Path(folder).resolve()
+    base = normalize_folder_arg(folder)
 
     if not ES_EXE.exists():
         raise FileNotFoundError(f"找不到 es.exe: {ES_EXE}")
@@ -240,9 +254,130 @@ def format_time_ns(ns):
     if ns is None:
         return "N/A"
 
-    from datetime import datetime
-
     return datetime.fromtimestamp(ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def file_record(files, rel):
+    item = files[rel]
+    return {
+        "relative": rel,
+        "path": str(item["path"]),
+        "size": item["size"],
+        "mtime": format_time_ns(item["mtime_ns"]),
+        "mtime_ns": item["mtime_ns"],
+    }
+
+
+def build_report_data(folder_a, folder_b, a, b, common, only_a, only_b, size_mismatch, time_mismatch, check_size, check_time, time_tolerance):
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "folder_a": str(normalize_folder_arg(folder_a)),
+        "folder_b": str(normalize_folder_arg(folder_b)),
+        "options": {
+            "check_size": check_size,
+            "check_time": check_time,
+            "time_tolerance_seconds": time_tolerance,
+        },
+        "summary": {
+            "files_in_a": len(a),
+            "files_in_b": len(b),
+            "common_relative_paths": len(common),
+            "only_in_a": len(only_a),
+            "only_in_b": len(only_b),
+            "size_mismatches": len(size_mismatch),
+            "time_mismatches": len(time_mismatch),
+        },
+        "only_in_a": [file_record(a, rel) for rel in only_a],
+        "only_in_b": [file_record(b, rel) for rel in only_b],
+        "size_mismatches": [
+            {
+                "relative": rel,
+                "a": file_record(a, rel),
+                "b": file_record(b, rel),
+            }
+            for rel in size_mismatch
+        ],
+        "time_mismatches": [
+            {
+                "relative": rel,
+                "a": file_record(a, rel),
+                "b": file_record(b, rel),
+            }
+            for rel in time_mismatch
+        ],
+    }
+
+
+def append_txt_group(lines, title, entries, formatter):
+    lines.append(title)
+    if entries:
+        for item in entries:
+            lines.append(formatter(item))
+    else:
+        lines.append("(none)")
+    lines.append("")
+
+
+def report_to_text(report):
+    summary = report["summary"]
+    lines = [
+        "========== 完整文件夹比对报告 / Full Folder Comparison Report ==========",
+        f"生成时间 / Generated at: {report['generated_at']}",
+        f"A: {report['folder_a']}",
+        f"B: {report['folder_b']}",
+        f"检查大小 / Check size: {report['options']['check_size']}",
+        f"检查修改时间 / Check time: {report['options']['check_time']}",
+        f"修改时间容差秒 / Time tolerance seconds: {report['options']['time_tolerance_seconds']}",
+        "",
+        "========== 汇总 / Summary ==========",
+        f"A 文件夹文件数 / Files in A: {summary['files_in_a']}",
+        f"B 文件夹文件数 / Files in B: {summary['files_in_b']}",
+        f"共同相对路径数量 / Common relative paths: {summary['common_relative_paths']}",
+        f"仅 A 存在数量 / Only in A: {summary['only_in_a']}",
+        f"仅 B 存在数量 / Only in B: {summary['only_in_b']}",
+        f"大小不同数量 / Size mismatches: {summary['size_mismatches']}",
+        f"修改时间不同数量 / Time mismatches: {summary['time_mismatches']}",
+        "",
+    ]
+
+    append_txt_group(
+        lines,
+        "========== 仅 A 存在 / Only in A ==========" ,
+        report["only_in_a"],
+        lambda item: f"{item['relative']} | path={item['path']} | size={item['size']} | mtime={item['mtime']}",
+    )
+    append_txt_group(
+        lines,
+        "========== 仅 B 存在 / Only in B ==========" ,
+        report["only_in_b"],
+        lambda item: f"{item['relative']} | path={item['path']} | size={item['size']} | mtime={item['mtime']}",
+    )
+    append_txt_group(
+        lines,
+        "========== 大小不同 / Size Mismatch ==========" ,
+        report["size_mismatches"],
+        lambda item: f"{item['relative']} | A={item['a']['size']} bytes | B={item['b']['size']} bytes",
+    )
+    append_txt_group(
+        lines,
+        "========== 修改时间不同 / Modified Time Mismatch ==========" ,
+        report["time_mismatches"],
+        lambda item: f"{item['relative']} | A={item['a']['mtime']} | B={item['b']['mtime']}",
+    )
+
+    return "\n".join(lines) + "\n"
+
+
+def save_full_reports(report, report_dir: Path):
+    report_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    txt_path = report_dir / f"compare_report_{timestamp}.txt"
+    json_path = report_dir / f"compare_report_{timestamp}.json"
+
+    txt_path.write_text(report_to_text(report), encoding="utf-8-sig")
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return txt_path, json_path
 
 
 def print_limited_group(title: str, entries, max_display: int, formatter=str):
@@ -263,7 +398,7 @@ def print_limited_group(title: str, entries, max_display: int, formatter=str):
     print()
 
 
-def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time_tolerance=2, max_display=DEFAULT_MAX_DISPLAY, debug=False):
+def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time_tolerance=2, max_display=DEFAULT_MAX_DISPLAY, report_dir=Path("."), debug=False):
     a = query_everything_files(
         folder_a,
         label="A",
@@ -313,6 +448,22 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
     if common:
         finish_progress()
 
+    report = build_report_data(
+        folder_a,
+        folder_b,
+        a,
+        b,
+        common,
+        only_a,
+        only_b,
+        size_mismatch,
+        time_mismatch,
+        check_size,
+        check_time,
+        time_tolerance,
+    )
+    txt_report, json_report = save_full_reports(report, Path(report_dir))
+
     print("========== 对比结果 / Comparison Result ==========")
     print(f"A 文件夹文件数 / Files in A: {len(a)}")
     print(f"B 文件夹文件数 / Files in B: {len(b)}")
@@ -320,6 +471,8 @@ def compare_folders(folder_a, folder_b, check_size=False, check_time=False, time
     print(f"仅 A 存在数量 / Only in A: {len(only_a)}")
     print(f"仅 B 存在数量 / Only in B: {len(only_b)}")
     print(f"每组最多显示 / Max displayed per group: {max_display}")
+    print(f"完整 TXT 报告 / Full TXT report: {txt_report}")
+    print(f"完整 JSON 报告 / Full JSON report: {json_report}")
 
     if check_size:
         print(f"大小不同数量 / Size mismatches: {len(size_mismatch)}")
@@ -399,6 +552,7 @@ def parse_args():
     parser.add_argument("-t", action="store_true", dest="check_time")
     parser.add_argument("--time-tolerance", type=float, default=2.0)
     parser.add_argument("--max-display", type=int, default=DEFAULT_MAX_DISPLAY)
+    parser.add_argument("--report-dir", type=str, default=".")
     parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
@@ -428,6 +582,7 @@ def main():
         check_time=args.check_time,
         time_tolerance=args.time_tolerance,
         max_display=args.max_display,
+        report_dir=Path(args.report_dir),
         debug=args.debug,
     )
 

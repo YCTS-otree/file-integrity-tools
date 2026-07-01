@@ -150,6 +150,12 @@ python compare_folders.py "E:\A" "D:\B" -s -t --max-display 20
 python compare_folders.py "E:\A" "D:\B" -s -t --max-display 0
 ```
 
+指定完整 TXT/JSON 报告保存目录（默认当前目录）：
+
+```bash
+python compare_folders.py "E:\A" "D:\B" -s -t --report-dir reports
+```
+
 输出 Everything 查询调试信息：
 
 ```bash
@@ -171,6 +177,7 @@ python compare_folders.py -h
 | `-t` | 比较修改时间 |
 | `--time-tolerance SECONDS` | 修改时间容差，默认 `2` 秒 |
 | `--max-display N` | 每个明细分组最多显示 `N` 条，默认 `64` 条；设为 `0` 表示只看报表不显示明细 |
+| `--report-dir DIR` | 完整 TXT/JSON 报告保存目录，默认当前目录 |
 | `--debug` | 输出 Everything 查询调试信息 |
 
 ### 结果解释
@@ -180,7 +187,7 @@ python compare_folders.py -h
 - `Size mismatch` / `大小不同`：相对路径相同，但文件大小不同，需要使用 `-s` 才会检查。
 - `Modified time mismatch` / `修改时间不同`：相对路径相同，但修改时间差超过容差，需要使用 `-t` 才会检查。
 
-> 注意：这个脚本不计算哈希，因此不能证明文件内容 100% 完全一致。如果需要严格校验，建议先用本工具筛出可疑文件，再对可疑文件单独计算哈希。运行时会用单行刷新显示已统计/已比对的文件数量；执行完成后会输出报表，明细默认每组最多显示 64 条。
+> 注意：这个脚本不计算哈希，因此不能证明文件内容 100% 完全一致。如果需要严格校验，建议先用本工具筛出可疑文件，再对可疑文件单独计算哈希。运行时会用单行刷新显示已统计/已比对的文件数量；执行完成后会输出控制台摘要，并在本地保存完整 TXT/JSON 报告，控制台明细默认每组最多显示 64 条。直接传入 `G:`、`E:` 这类盘符时，脚本会自动按盘符根目录（例如 `G:\`、`E:\`）处理。
 
 ## 常见问题
 
